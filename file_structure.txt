@@ -1,0 +1,7 @@
+UrbanAirQuality_CV/
+│
+├── main.py              # The entry point to run the system
+├── haze_estimation.py   # The math/physics logic (Dark Channel Prior)
+├── aqi_classifier.py    # The Deep Learning Model architecture
+├── requirements.txt     # Library dependencies
+└── README.md            # Documentation

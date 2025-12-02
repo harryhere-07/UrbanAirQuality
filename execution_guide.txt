@@ -1,0 +1,44 @@
+1. First-Time Setup (Installation)
+Run this command once to install all necessary libraries for both the desktop and web versions.
+pip install opencv-python numpy tensorflow matplotlib streamlit
+
+
+2. To Run the Desktop Application
+Use this command if you want the standard pop-up window version (using main.py).
+python main.py
+
+(Note: If you are on Mac or Linux and the above doesn't work, try python3 main.py)
+
+
+3. To Run the Web Dashboard
+Use this command if you want the detailed browser-based analysis (using webapp.py).
+streamlit run webapp.py
+
+
+
+4. Quick Troubleshooting Commands
+If you encounter errors, these commands often fix common issues:
+
+Check if Python is installed:
+python --version
+
+Upgrade pip (if installation fails):
+python -m pip install --upgrade pip
+
+Force reinstall dependencies (if files are missing):
+pip install --force-reinstall -r requirements.txt
+
+
+5.Save this as a batch file (Optional)
+If you are on Windows, you can open Notepad, paste the following, and save it as run_project.bat. Then you can just double-click that file to run the web app immediately.
+
+Code snippet
+
+@echo off
+echo Starting Air Quality System...
+pip install opencv-python numpy tensorflow streamlit > nul
+streamlit run webapp.py
+pause
+
+
+
