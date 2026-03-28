@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import time
 import tempfile
+import queue
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration
 import av
 from haze_estimation import HazeEstimator
@@ -116,7 +117,7 @@ st.markdown("---")
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3211/3211116.png", width=60)
     st.markdown("### Control Center")
-    input_source = st.radio("Select Input Source", ("📹 Live Camera", "📁 Upload Video"), index=1)
+    input_source = st.radio("Select Input Source", ("📹 Live Camera", "📁 Upload Media"), index=1)
     
     st.markdown("---")
     st.markdown("### Fine Tuning")
@@ -175,7 +176,7 @@ if "pm25_history" not in st.session_state:
     st.session_state.pm25_history = []
 
 # --- VIDEO PROCESSING LOOP ---
-def process_frame(frame):
+def process_frame(frame, update_history=True):
     # Resize for performance and consistency
     frame = cv2.resize(frame, (640, 480))
     
@@ -189,9 +190,10 @@ def process_frame(frame):
     aqi_label, pm25_est = ai_model.predict_aqi(frame, haze_score)
     
     # 3. Update History
-    st.session_state.pm25_history.append(pm25_est)
-    if len(st.session_state.pm25_history) > 60: # Keep more history for nicer charts
-        st.session_state.pm25_history.pop(0)
+    if update_history:
+        st.session_state.pm25_history.append(pm25_est)
+        if len(st.session_state.pm25_history) > 60: # Keep more history for nicer charts
+            st.session_state.pm25_history.pop(0)
 
     # 4. Visualization (Heatmap overlay)
     transmission_display = (transmission * 255).astype(np.uint8)
@@ -215,15 +217,32 @@ def process_frame(frame):
     
     return overlay, aqi_label, pm25_est, haze_score
 
+# --- MAP CACHED QUEUE FOR WEBRTC ANALYTICS ---
+@st.cache_resource
+def get_analytics_queue():
+    import queue
+    return queue.Queue()
+
 # --- INPUT HANDLING ---
 if input_source == "📹 Live Camera":
     status_text.info("Setting up secure WebRTC camera connection...")
     video_placeholder.empty() # Clear placeholder
     
+    result_queue = get_analytics_queue()
+    
     # Define how to process video frames asynchronously
     def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
-        processed_frame, label, pm25, score = process_frame(img)
+        processed_frame, label, pm25, score = process_frame(img, update_history=False)
+        
+        # Clear out queue to drop old frames and only push latest
+        while not result_queue.empty():
+            try:
+                result_queue.get_nowait()
+            except queue.Empty:
+                break
+                
+        result_queue.put((label, pm25, score))
         return av.VideoFrame.from_ndarray(processed_frame, format="bgr24")
         
     with col_vision:
@@ -240,42 +259,85 @@ if input_source == "📹 Live Camera":
         
     if webrtc_ctx.state.playing:
         status_text.success("✅ Secure Live Feed Active")
-        st.info("💡 Note: In WebRTC mode, real-time metrics are drawn directly on the video stream instead of the side panels to maximize performance without threading issues.")
+        st.info("💡 Note: Real-time analytics are dynamically updated from the live feed.")
+        
+        while True:
+            try:
+                result = result_queue.get(timeout=1.0)
+            except queue.Empty:
+                result = None
+            
+            if result:
+                label, pm25, score = result
+                
+                # Update UI Metrics
+                color_delta = "normal" if label in ["Good", "Moderate"] else "off" if label in ["Unhealthy for Sensitive Groups", "Unhealthy"] else "inverse"
+                
+                aqi_metric.metric("Air Quality", label, delta=f"{pm25:.1f} PM2.5", delta_color=color_delta)
+                pm25_metric.metric("Pollution Score", f"{score:.1f}/100")
+                haze_metric.progress(min(max(int(score) / 100.0, 0.0), 1.0))
+                
+                # Update History
+                st.session_state.pm25_history.append(pm25)
+                if len(st.session_state.pm25_history) > 60:
+                    st.session_state.pm25_history.pop(0)
+                
+                # Beautiful Area Chart
+                chart_placeholder.area_chart(st.session_state.pm25_history, color="#00C6FF")
     else:
         status_text.warning("Click 'START' below to grant camera permissions and begin analysis.")
 
-elif input_source == "📁 Upload Video":
-    uploaded_file = st.sidebar.file_uploader("Upload Surveillance Footage", type=["mp4", "avi", "mov"], help="Max 200MB.")
+elif input_source == "📁 Upload Media":
+    uploaded_file = st.sidebar.file_uploader("Upload Surveillance Footage", type=["mp4", "avi", "mov", "jpg", "jpeg", "png"], help="Max 200MB.")
     
     if uploaded_file is None:
-        video_placeholder.info("👈 Please upload a video file from the sidebar to begin analysis.")
+        video_placeholder.info("👈 Please upload a media file from the sidebar to begin analysis.")
     else:
         st.sidebar.success("File loaded successfully.")
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') 
-        tfile.write(uploaded_file.read())
-        cap = cv2.VideoCapture(tfile.name)
+        file_extension = uploaded_file.name.split('.')[-1].lower()
         
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: 
-                video_placeholder.success("✅ Analysis Complete.")
-                break
-                
-            # Process & Render
+        if file_extension in ['jpg', 'jpeg', 'png']:
+            # Image processing
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            frame = cv2.imdecode(file_bytes, 1)
+            
             processed_frame, label, pm25, score = process_frame(frame)
             video_placeholder.image(processed_frame, channels="BGR", use_container_width=True)
             
             # Update UI Metrics
             color_delta = "normal" if label in ["Good", "Moderate"] else "off" if label in ["Unhealthy for Sensitive Groups", "Unhealthy"] else "inverse"
-            
             aqi_metric.metric("Air Quality", label, delta=f"{pm25:.1f} PM2.5", delta_color=color_delta)
             pm25_metric.metric("Pollution Score", f"{score:.1f}/100")
-            haze_metric.progress(int(score) / 100.0)
+            haze_metric.progress(min(max(int(score) / 100.0, 0.0), 1.0))
             
-            # Beautiful Area Chart
             chart_placeholder.area_chart(st.session_state.pm25_history, color="#00C6FF")
+        else:
+            # Video processing
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') 
+            tfile.write(uploaded_file.read())
+            cap = cv2.VideoCapture(tfile.name)
             
-            # Provide an abort mechanism if video is too long
-            # (Streamlit loop can be aborted by stopping the app, but graceful exit is better)
-            
-        cap.release()
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: 
+                    video_placeholder.success("✅ Analysis Complete.")
+                    break
+                    
+                # Process & Render
+                processed_frame, label, pm25, score = process_frame(frame)
+                video_placeholder.image(processed_frame, channels="BGR", use_container_width=True)
+                
+                # Update UI Metrics
+                color_delta = "normal" if label in ["Good", "Moderate"] else "off" if label in ["Unhealthy for Sensitive Groups", "Unhealthy"] else "inverse"
+                
+                aqi_metric.metric("Air Quality", label, delta=f"{pm25:.1f} PM2.5", delta_color=color_delta)
+                pm25_metric.metric("Pollution Score", f"{score:.1f}/100")
+                haze_metric.progress(min(max(int(score) / 100.0, 0.0), 1.0))
+                
+                # Beautiful Area Chart
+                chart_placeholder.area_chart(st.session_state.pm25_history, color="#00C6FF")
+                
+                # Provide an abort mechanism if video is too long
+                # (Streamlit loop can be aborted by stopping the app, but graceful exit is better)
+                
+            cap.release()
