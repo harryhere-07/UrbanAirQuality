@@ -1,4 +1,9 @@
-opencv-python-headless
+opencv-python
 numpy
 tensorflow
 streamlit
+matplotlib
+pillow
+scikit-learn
+seaborn
+streamlit-webrtc
