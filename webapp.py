@@ -301,7 +301,7 @@ elif input_source == "📁 Upload Media":
             file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
             frame = cv2.imdecode(file_bytes, 1)
             
-            processed_frame, label, pm25, score = process_frame(frame)
+            processed_frame, label, pm25, score = process_frame(frame, update_history=False)
             video_placeholder.image(processed_frame, channels="BGR", use_container_width=True)
             
             # Update UI Metrics
@@ -310,6 +310,8 @@ elif input_source == "📁 Upload Media":
             pm25_metric.metric("Pollution Score", f"{score:.1f}/100")
             haze_metric.progress(min(max(int(score) / 100.0, 0.0), 1.0))
             
+            # For a single image, create a flat trendline filling the chart to represent the static PM2.5 value
+            st.session_state.pm25_history = [pm25] * 20
             chart_placeholder.area_chart(st.session_state.pm25_history, color="#00C6FF")
         else:
             # Video processing
